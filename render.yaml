@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: churn-forecast-backend
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn churn_forecast_backend.wsgi --chdir churn_forecast_backend --bind 0.0.0.0:$PORT
+    envVars:
+      - key: DJANGO_SETTINGS_MODULE
+        value: churn_forecast_backend.settings
+      - key: ALLOWED_HOSTS
+        value: "*"
+
