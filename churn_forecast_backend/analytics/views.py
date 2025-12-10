@@ -43,33 +43,39 @@ class CustomerViewSet(viewsets.ModelViewSet):
         high_risk_customers = predictions.filter(risk_level='High').count()
         churn_rate = (high_risk_customers / total_customers * 100) if total_customers > 0 else 0
         
-        # Risk level distribution
-        risk_distribution = predictions.values('risk_level').annotate(
-            count=Count('id')
-        ).order_by('risk_level')
-        
-        # Churn by country
-        churn_by_country = predictions.select_related('customer').values(
-            'customer__country'
-        ).annotate(
-            total_customers=Count('id'),
-            high_risk=Count('id', filter=Q(risk_level='High'))
-        ).order_by('-high_risk')
-        
-        # Churn by age group - using Django ORM instead of raw SQL
-        churn_by_age = predictions.select_related('customer').annotate(
-            age_group=Case(
-                When(customer__age__lt=30, then=Value('18-29')),
-                When(customer__age__lt=40, then=Value('30-39')),
-                When(customer__age__lt=50, then=Value('40-49')),
-                When(customer__age__lt=60, then=Value('50-59')),
-                default=Value('60+'),
-                output_field=models.CharField()
-            )
-        ).values('age_group').annotate(
-            total_customers=Count('id'),
-            high_risk=Count('id', filter=Q(risk_level='High'))
-        ).order_by('age_group')
+        # Risk level distribution - handle empty predictions
+        if predictions.exists():
+            risk_distribution = predictions.values('risk_level').annotate(
+                count=Count('id')
+            ).order_by('risk_level')
+            
+            # Churn by country
+            churn_by_country = predictions.select_related('customer').values(
+                'customer__country'
+            ).annotate(
+                total_customers=Count('id'),
+                high_risk=Count('id', filter=Q(risk_level='High'))
+            ).order_by('-high_risk')
+            
+            # Churn by age group - using Django ORM instead of raw SQL
+            churn_by_age = predictions.select_related('customer').annotate(
+                age_group=Case(
+                    When(customer__age__lt=30, then=Value('18-29')),
+                    When(customer__age__lt=40, then=Value('30-39')),
+                    When(customer__age__lt=50, then=Value('40-49')),
+                    When(customer__age__lt=60, then=Value('50-59')),
+                    default=Value('60+'),
+                    output_field=models.CharField()
+                )
+            ).values('age_group').annotate(
+                total_customers=Count('id'),
+                high_risk=Count('id', filter=Q(risk_level='High'))
+            ).order_by('age_group')
+        else:
+            # Return empty data if no predictions exist
+            risk_distribution = []
+            churn_by_country = []
+            churn_by_age = []
         
         return Response({
             'overall_churn_rate': round(churn_rate, 2),
@@ -77,7 +83,8 @@ class CustomerViewSet(viewsets.ModelViewSet):
             'high_risk_customers': high_risk_customers,
             'risk_distribution': list(risk_distribution),
             'churn_by_country': list(churn_by_country),
-            'churn_by_age_group': list(churn_by_age)
+            'churn_by_age_group': list(churn_by_age),
+            'predictions_exist': predictions.exists()
         })
 
     @action(detail=False, methods=['get'])

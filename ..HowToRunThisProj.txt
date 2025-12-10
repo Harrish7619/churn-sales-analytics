@@ -1,0 +1,5 @@
+go to BNP-Copy file path and open cmd and run this command
+
+cd "F:\BNP - Copy"
+.\.venv\Scripts\Activate.ps1
+python run_app.py

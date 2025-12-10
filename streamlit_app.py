@@ -62,10 +62,31 @@ def make_api_request(endpoint, method="GET", data=None):
         elif method == "POST":
             response = requests.post(url, json=data)
         
-        if response.status_code == 200:
+        # Accept both 200 (OK) and 201 (Created) status codes
+        if response.status_code in [200, 201]:
             return response.json()
         else:
-            st.error(f"API Error: {response.status_code} - {response.text}")
+            # Try to parse error message from response
+            try:
+                error_data = response.json()
+                # Handle different error formats
+                if 'detail' in error_data:
+                    st.error(f"**Error:** {error_data['detail']}")
+                elif isinstance(error_data, dict):
+                    # Display field-specific validation errors
+                    st.error("**Validation Errors:**")
+                    for field, errors in error_data.items():
+                        if isinstance(errors, list):
+                            error_text = ', '.join([str(e) for e in errors])
+                        else:
+                            error_text = str(errors)
+                        # Format field name nicely
+                        field_name = field.replace('_', ' ').title()
+                        st.warning(f"  • **{field_name}**: {error_text}")
+                else:
+                    st.error(f"**Error:** {str(error_data)}")
+            except:
+                st.error(f"**API Error ({response.status_code}):** {response.text}")
             return None
     except requests.exceptions.ConnectionError:
         st.error("Cannot connect to the backend API. Please make sure the Django server is running.")
@@ -149,7 +170,10 @@ def show_home_page():
         with col4:
             churn_analytics = make_api_request("customers/churn_analytics/")
             if churn_analytics:
-                st.metric("Churn Rate", f"{churn_analytics.get('overall_churn_rate', 0):.1f}%")
+                if not churn_analytics.get('predictions_exist', True):
+                    st.metric("Churn Rate", "N/A", help="Train the churn model first")
+                else:
+                    st.metric("Churn Rate", f"{churn_analytics.get('overall_churn_rate', 0):.1f}%")
 
 def show_churn_dashboard():
     """Display the churn prediction dashboard"""
@@ -158,7 +182,7 @@ def show_churn_dashboard():
     # Get churn analytics
     churn_analytics = make_api_request("customers/churn_analytics/")
     
-    if churn_analytics:
+    if churn_analytics and churn_analytics.get('predictions_exist', False):
         # Key metrics
         col1, col2, col3, col4 = st.columns(4)
         
@@ -227,105 +251,117 @@ def show_churn_dashboard():
     # Top 10 high-risk customers
     st.markdown("## 🔴 Top 10 High-Risk Customers")
     
-    top_risk = make_api_request("customers/top_churn_risk/")
-    if top_risk:
-        risk_df = pd.DataFrame(top_risk)
-        if not risk_df.empty:
-            # Format the data for display
-            display_df = risk_df[['customer_id', 'churn_probability', 'risk_level', 
-                                'customer_age', 'customer_gender', 'customer_country']].copy()
-            display_df['churn_probability'] = (display_df['churn_probability'] * 100).round(1)
-            display_df.columns = ['Customer ID', 'Churn Probability (%)', 'Risk Level', 
-                                'Age', 'Gender', 'Country']
-            
-            st.dataframe(display_df, width='stretch')
-            
-            # Download button
-            csv = display_df.to_csv(index=False)
-            st.download_button(
-                label="📥 Download High-Risk Customers",
-                data=csv,
-                file_name=f"high_risk_customers_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv"
-            )
+    if not churn_analytics or not churn_analytics.get('predictions_exist', False):
+        st.warning("⚠️ No churn predictions available. Please train the churn prediction model first from the 'Model Training' page.")
+    else:
+        top_risk = make_api_request("customers/top_churn_risk/")
+        if top_risk:
+            risk_df = pd.DataFrame(top_risk)
+            if not risk_df.empty:
+                # Format the data for display
+                display_df = risk_df[['customer_id', 'churn_probability', 'risk_level', 
+                                    'customer_age', 'customer_gender', 'customer_country']].copy()
+                display_df['churn_probability'] = (display_df['churn_probability'] * 100).round(1)
+                # Add serial number starting from 1
+                display_df.insert(0, 'S.No.', range(1, len(display_df) + 1))
+                display_df.columns = ['S.No.', 'Customer ID', 'Churn Probability (%)', 'Risk Level', 
+                                    'Age', 'Gender', 'Country']
+                
+                st.dataframe(display_df.reset_index(drop=True), width='stretch', hide_index=True)
+                
+                # Download button
+                csv = display_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download High-Risk Customers",
+                    data=csv,
+                    file_name=f"high_risk_customers_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv"
+                )
     
     # Paginated customer list with filters
     st.markdown("## 📋 All Customers (Paginated)")
     
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        risk_filter = st.selectbox("Filter by Risk Level", ["All", "High", "Medium", "Low"])
-    
-    with col2:
-        country_filter = st.selectbox("Filter by Country", ["All"] + 
-                                    [c['customer__country'] for c in (churn_analytics.get('churn_by_country', []) if churn_analytics else [])])
-    
-    with col3:
-        page_size = st.selectbox("Records per page", [10, 20, 50])
-    
-    # Initialize session state for pagination
-    if 'current_page' not in st.session_state:
-        st.session_state.current_page = 1
-    
-    # Get paginated data first to check pagination state
-    params = {
-        'page': st.session_state.current_page,
-        'page_size': page_size
-    }
-    
-    if risk_filter != "All":
-        params['risk_level'] = risk_filter
-    
-    if country_filter != "All":
-        params['country'] = country_filter
-    
-    # Build query string
-    query_string = "&".join([f"{k}={v}" for k, v in params.items()])
-    paginated_data = make_api_request(f"customers/paginated_customers/?{query_string}")
-    
-    # Handle pagination buttons based on API response
-    if paginated_data:
-        col1, col2, col3 = st.columns([1, 2, 1])
+    if not churn_analytics or not churn_analytics.get('predictions_exist', False):
+        st.info("ℹ️ Customer predictions will appear here after training the churn model.")
+    else:
+        col1, col2, col3 = st.columns(3)
+        
         with col1:
-            prev_disabled = not paginated_data.get('has_previous', False)
-            if st.button("◀️ Previous", disabled=prev_disabled):
-                st.session_state.current_page -= 1
-                st.rerun()
+            risk_filter = st.selectbox("Filter by Risk Level", ["All", "High", "Medium", "Low"])
         
         with col2:
-            st.write(f"Page {st.session_state.current_page}")
+            country_filter = st.selectbox("Filter by Country", ["All"] + 
+                                        [c['customer__country'] for c in (churn_analytics.get('churn_by_country', []) if churn_analytics else [])])
         
         with col3:
-            next_disabled = not paginated_data.get('has_next', False)
-            if st.button("Next ▶️", disabled=next_disabled):
-                st.session_state.current_page += 1
-                st.rerun()
-    
-    if paginated_data and paginated_data.get('data'):
-        customers_df = pd.DataFrame(paginated_data['data'])
-        if not customers_df.empty:
-            # Format for display
-            display_df = customers_df[['customer_id', 'churn_probability', 'risk_level',
-                                     'customer_age', 'customer_gender', 'customer_country']].copy()
-            display_df['churn_probability'] = (display_df['churn_probability'] * 100).round(1)
-            display_df.columns = ['Customer ID', 'Churn Probability (%)', 'Risk Level',
-                                'Age', 'Gender', 'Country']
-            
-            st.dataframe(display_df, width='stretch')
-            
-            # Pagination info
-            col1, col2, col3 = st.columns(3)
+            page_size = st.selectbox("Records per page", [10, 20, 50])
+        
+        # Initialize session state for pagination
+        if 'current_page' not in st.session_state:
+            st.session_state.current_page = 1
+        
+        # Get paginated data first to check pagination state
+        params = {
+            'page': st.session_state.current_page,
+            'page_size': page_size
+        }
+        
+        if risk_filter != "All":
+            params['risk_level'] = risk_filter
+        
+        if country_filter != "All":
+            params['country'] = country_filter
+        
+        # Build query string
+        query_string = "&".join([f"{k}={v}" for k, v in params.items()])
+        paginated_data = make_api_request(f"customers/paginated_customers/?{query_string}")
+        
+        # Handle pagination buttons based on API response
+        if paginated_data:
+            col1, col2, col3 = st.columns([1, 2, 1])
             with col1:
-                st.info(f"Page {paginated_data['page']} of {(paginated_data['total_count'] // page_size) + 1}")
+                prev_disabled = not paginated_data.get('has_previous', False)
+                if st.button("◀️ Previous", disabled=prev_disabled):
+                    st.session_state.current_page -= 1
+                    st.rerun()
+            
             with col2:
-                st.info(f"Total Records: {paginated_data['total_count']}")
+                st.write(f"Page {st.session_state.current_page}")
+            
             with col3:
-                # Show pagination status
-                if not paginated_data.get('has_next', False):
-                    st.info("Last page")
-                if not paginated_data.get('has_previous', False):
-                    st.info("First page")
+                next_disabled = not paginated_data.get('has_next', False)
+                if st.button("Next ▶️", disabled=next_disabled):
+                    st.session_state.current_page += 1
+                    st.rerun()
+            
+            if paginated_data and paginated_data.get('data'):
+                customers_df = pd.DataFrame(paginated_data['data'])
+                if not customers_df.empty:
+                    # Format for display
+                    display_df = customers_df[['customer_id', 'churn_probability', 'risk_level',
+                                             'customer_age', 'customer_gender', 'customer_country']].copy()
+                    display_df['churn_probability'] = (display_df['churn_probability'] * 100).round(1)
+                    # Add serial number that continues across pages
+                    # Formula: (current_page - 1) * page_size + row_index + 1
+                    start_num = (st.session_state.current_page - 1) * page_size + 1
+                    display_df.insert(0, 'S.No.', range(start_num, start_num + len(display_df)))
+                    display_df.columns = ['S.No.', 'Customer ID', 'Churn Probability (%)', 'Risk Level',
+                                        'Age', 'Gender', 'Country']
+                    
+                    st.dataframe(display_df.reset_index(drop=True), width='stretch', hide_index=True)
+                    
+                    # Pagination info
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.info(f"Page {paginated_data['page']} of {(paginated_data['total_count'] // page_size) + 1}")
+                    with col2:
+                        st.info(f"Total Records: {paginated_data['total_count']}")
+                    with col3:
+                        # Show pagination status
+                        if not paginated_data.get('has_next', False):
+                            st.info("Last page")
+                        if not paginated_data.get('has_previous', False):
+                            st.info("First page")
 
 def show_sales_dashboard():
     """Display the sales forecasting dashboard"""
@@ -378,10 +414,12 @@ def show_sales_dashboard():
             display_df = products_df[['product_name', 'product_category', 'predicted_quantity', 
                                     'confidence_level', 'forecast_date']].copy()
             display_df['confidence_level'] = (display_df['confidence_level'] * 100).round(1)
-            display_df.columns = ['Product Name', 'Category', 'Predicted Quantity', 
+            # Add serial number starting from 1
+            display_df.insert(0, 'S.No.', range(1, len(display_df) + 1))
+            display_df.columns = ['S.No.', 'Product Name', 'Category', 'Predicted Quantity', 
                                 'Confidence (%)', 'Forecast Date']
             
-            st.dataframe(display_df, width='stretch')
+            st.dataframe(display_df.reset_index(drop=True), width='stretch', hide_index=True)
             
             # Download button
             csv = display_df.to_csv(index=False)
@@ -471,7 +509,7 @@ def show_data_input_page():
                 last_purchase_date = st.date_input("Last Purchase Date")
                 cancellations_count = st.number_input("Cancellations Count", min_value=0)
                 subscription_status = st.selectbox("Subscription Status", 
-                                                 ["Active", "Inactive", "Cancelled"])
+                                                 ["active", "inactive", "cancelled", "paused"])
             
             purchase_frequency = st.number_input("Purchase Frequency", min_value=0)
             ratings = st.slider("Ratings", min_value=1.0, max_value=5.0, value=4.0, step=0.1)
@@ -542,8 +580,8 @@ def show_data_input_page():
             if st.form_submit_button("Add Order"):
                 order_data = {
                     'order_id': order_id,
-                    'customer': customer_id,
-                    'product': product_id,
+                    'customer_id': customer_id,
+                    'product_id': product_id,
                     'quantity': quantity,
                     'order_date': order_date.isoformat()
                 }
@@ -617,10 +655,12 @@ def show_model_training_page():
             display_df = perf_df[['model_type', 'model_version', 'accuracy', 
                                 'precision', 'recall', 'f1_score', 'training_date']].copy()
             display_df['training_date'] = pd.to_datetime(display_df['training_date']).dt.strftime('%Y-%m-%d %H:%M')
-            display_df.columns = ['Model Type', 'Version', 'Accuracy', 'Precision', 
+            # Add serial number starting from 1
+            display_df.insert(0, 'S.No.', range(1, len(display_df) + 1))
+            display_df.columns = ['S.No.', 'Model Type', 'Version', 'Accuracy', 'Precision', 
                                 'Recall', 'F1 Score', 'Training Date']
             
-            st.dataframe(display_df, width='stretch')
+            st.dataframe(display_df.reset_index(drop=True), width='stretch', hide_index=True)
             
             # Performance visualization
             fig = px.line(perf_df, x='training_date', y='accuracy', 

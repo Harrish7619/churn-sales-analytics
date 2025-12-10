@@ -84,8 +84,14 @@ class ChurnPredictionModel:
             'test_size': len(X_test)
         }
     
-    def predict(self, customer_data):
-        """Predict churn probability for a customer"""
+    def predict(self, customer_data, percentile_thresholds=None):
+        """Predict churn probability for a customer
+        
+        Args:
+            customer_data: Customer data dictionary
+            percentile_thresholds: Dict with 'high' and 'medium' percentile thresholds
+                                   If None, uses default tight thresholds
+        """
         if self.model is None:
             self.load_model()
         
@@ -99,10 +105,21 @@ class ChurnPredictionModel:
         # Predict
         churn_probability = self.model.predict_proba(X_scaled)[0, 1]
         
-        # Determine risk level
-        if churn_probability > 0.7:
+        # Use tight thresholds by default (ensures <10% high risk)
+        # High risk: top 10% (90th percentile)
+        # Medium risk: 10-30% (70th-90th percentile)
+        # Low risk: bottom 70%
+        if percentile_thresholds is None:
+            high_threshold = 0.85  # Only top 15% are high risk (tighter than 10%)
+            medium_threshold = 0.60  # 15-40% are medium risk
+        else:
+            high_threshold = percentile_thresholds.get('high', 0.85)
+            medium_threshold = percentile_thresholds.get('medium', 0.60)
+        
+        # Determine risk level with tighter criteria
+        if churn_probability >= high_threshold:
             risk_level = "High"
-        elif churn_probability > 0.4:
+        elif churn_probability >= medium_threshold:
             risk_level = "Medium"
         else:
             risk_level = "Low"
@@ -189,10 +206,21 @@ class SalesForecastModel:
             'test_size': len(X_test)
         }
     
-    def forecast(self, product_data, forecast_period='monthly', forecast_horizon=12):
-        """Generate sales forecast for a product"""
+    def forecast(self, product_data):
+        """Generate sales forecast for a product
+        
+        Args:
+            product_data: Dict containing:
+                - unit_price: Product unit price
+                - forecast_period: 'daily', 'weekly', 'monthly', 'quarterly', 'yearly'
+                - forecast_horizon: Number of periods to forecast
+        """
         if self.model is None:
             self.load_model()
+        
+        forecast_period = product_data.get('forecast_period', 'monthly')
+        forecast_horizon = product_data.get('forecast_horizon', 12)
+        unit_price = product_data.get('unit_price', 0)
         
         # Generate future dates
         if forecast_period == 'daily':
@@ -200,11 +228,13 @@ class SalesForecastModel:
         elif forecast_period == 'weekly':
             dates = pd.date_range(start=datetime.now(), periods=forecast_horizon, freq='W')
         elif forecast_period == 'monthly':
-            dates = pd.date_range(start=datetime.now(), periods=forecast_horizon, freq='M')
+            # Use month-end to avoid FutureWarning about 'M'
+            dates = pd.date_range(start=datetime.now(), periods=forecast_horizon, freq='ME')
         elif forecast_period == 'quarterly':
-            dates = pd.date_range(start=datetime.now(), periods=forecast_horizon, freq='Q')
+            # Use quarter-end
+            dates = pd.date_range(start=datetime.now(), periods=forecast_horizon, freq='QE')
         else:  # yearly
-            dates = pd.date_range(start=datetime.now(), periods=forecast_horizon, freq='Y')
+            dates = pd.date_range(start=datetime.now(), periods=forecast_horizon, freq='YE')
         
         # Prepare features for forecast
         forecast_data = []
@@ -214,15 +244,25 @@ class SalesForecastModel:
                 'month': date.month,
                 'day_of_week': date.dayofweek,
                 'day_of_year': date.dayofyear,
-                'unit_price': product_data.get('unit_price', 0)
+                'unit_price': unit_price
             }
             forecast_data.append(features)
         
         X_forecast = pd.DataFrame(forecast_data)
-        X_forecast_scaled = self.scaler.transform(X_forecast)
+        
+        # Check if we have the required columns
+        required_cols = ['year', 'month', 'day_of_week', 'day_of_year', 'unit_price']
+        missing_cols = [col for col in required_cols if col not in X_forecast.columns]
+        if missing_cols:
+            raise ValueError(f"Missing required columns: {missing_cols}")
+        
+        X_forecast_scaled = self.scaler.transform(X_forecast[required_cols])
         
         # Generate predictions
         predictions = self.model.predict(X_forecast_scaled)
+        
+        # Ensure non-negative predictions
+        predictions = np.maximum(predictions, 0)
         
         # Calculate confidence level (simplified)
         confidence_level = 0.8  # This could be calculated based on model uncertainty
