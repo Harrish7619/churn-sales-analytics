@@ -3,6 +3,7 @@ services:
     name: churn-forecast-backend
     env: python
     buildCommand: pip install -r requirements.txt
+    preDeployCommand: cd churn_forecast_backend && python manage.py migrate && python load_data.py
     startCommand: gunicorn churn_forecast_backend.wsgi --chdir churn_forecast_backend --bind 0.0.0.0:$PORT
     envVars:
       - key: DJANGO_SETTINGS_MODULE
