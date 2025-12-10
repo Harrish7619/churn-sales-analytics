@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import requests
 import pandas as pd
@@ -16,8 +17,8 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# API Base URL
-API_BASE_URL = "http://localhost:8000/api"
+# API Base URL (configurable via env var for deployed backend)
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000/api")
 
 # Custom CSS for better styling
 st.markdown("""
